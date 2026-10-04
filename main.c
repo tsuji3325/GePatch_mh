@@ -241,6 +241,8 @@ static int dirty_y = 0;
 static int dirty_w = WIDTH;
 static int dirty_h = HEIGHT;
 
+void copyFrameBuffer(void);
+
 static inline void tryFrameCopy()
 {
   if (!fb_pending)
@@ -444,7 +446,7 @@ u32 *handleControlFlowCommands(u32 *list) {
           state.finished = 1;
           return NULL;
 
-        默认:
+        default:
           break;
       }
       break;
@@ -585,10 +587,6 @@ void patchGeList(u32 *list, u32 *stall) {
   // =========================================================
   // 🚀 5. 正常推进（不再做重计算）
   // =========================================================
-  AdvanceVerts(count, vertex_size);
-  break;
-}
-       
   int pos = (state.vertex_type & GE_VTYPE_POS_MASK) >> GE_VTYPE_POS_SHIFT;
   int pos_size = possize[pos] / 3;
 
@@ -611,14 +609,14 @@ void patchGeList(u32 *list, u32 *stall) {
       // ===== branchless x =====
       int x_is_special = (x == 480) | (x == 960);
       int x_in_range   = (x > -1024) & (x < 1024);
-      int x_scaled     = x << 1;
+      int x_scaled     = x * 2;
 
       x = x_is_special ? 960 : (x_in_range ? x_scaled : x);
 
       // ===== branchless y =====
       int y_is_special = (y == 272) | (y == 544);
       int y_in_range   = (y > -1024) & (y < 1024);
-      int y_scaled     = y << 1;
+      int y_scaled     = y * 2;
 
       y = y_is_special ? 544 : (y_in_range ? y_scaled : y);
 
@@ -661,48 +659,6 @@ void patchGeList(u32 *list, u32 *stall) {
   break;
 }
   
-  int pos = (state.vertex_type & GE_VTYPE_POS_MASK) >> GE_VTYPE_POS_SHIFT;
-  int pos_size = possize[pos] / 3;
-
-  u32 vertex_addr = state.vertex_addr;
-
-  for (int i = lower; i < upper; i++, vertex_addr += vertex_size) {
-
-    for (int j = 0; j < 2; j++) {
-
-      u32 addr = vertex_addr + pos_off + j * pos_size;
-
-      if (pos_size == 2) {
-        short *v = (short *)addr;
-
-        if (*v != 0) {
-          if (*v == 480 || *v == 960)
-            *v = 960;
-          else if (*v == 272 || *v == 544)
-            *v = 544;
-          else if (*v > -1024 && *v < 1024)
-            *v <<= 1;   // 🚀 比 *2 更快
-        }
-
-      } else if (pos_size == 4) {
-        float *f = (float *)addr;
-
-        if (*f != 0.0f) {
-          if (*f == 480.0f || *f == 960.0f)
-            *f = 960.0f;
-          else if (*f == 272.0f || *f == 544.0f)
-            *f = 544.0f;
-          else if (*f > -1024.0f && *f < 1024.0f)
-            *f *= 2.0f;
-        }
-      }
-    }
-  }
-
-  AdvanceVerts(count, vertex_size);
-  break;
-}
-
       case GE_CMD_FRAMEBUFPIXFORMAT:
         *list = (cmd << 24) | PIXELFORMAT;
         break;
@@ -871,8 +827,11 @@ void patchGeList(u32 *list, u32 *stall) {
         break;
     }
 
+  }
+}
+
 void *(* _sceGeEdramGetAddr)(void);
-unsigned int *(* _sceGeEdramGetSize)(void);
+unsigned int (* _sceGeEdramGetSize)(void);
 int (* _sceGeGetList)(int qid, void *list, int *flag);
 int (* _sceGeListUpdateStallAddr)(int qid, void *stall);
 int (* _sceGeListEnQueue)(const void *list, void *stall, int cbid, PspGeListArgs *arg);
@@ -970,7 +929,7 @@ int sceGeListSyncPatched(int qid, int syncType) {
   return _sceGeListSync(qid, syncType);
 }
 
-void copyFrameBuffer()
+void copyFrameBuffer(void)
 {
   if (!fb_dirty)
     return;
@@ -1047,16 +1006,16 @@ int module_start(SceSize args, void *argp) {
   _sceGeListSync = (void *)FindProc("sceGE_Manager", "sceGe_driver", 0x03444EB4);
   _sceGeDrawSync = (void *)FindProc("sceGE_Manager", "sceGe_driver", 0xB287BD61);
 
-  sctrlHENPatchSyscall((u32)_sceGeEdramGetAddr, sceGeEdramGetAddrPatched);
-  sctrlHENPatchSyscall((u32)_sceGeEdramGetSize, sceGeEdramGetSizePatched);
-  sctrlHENPatchSyscall((u32)_sceGeListUpdateStallAddr, sceGeListUpdateStallAddrPatched);
-  sctrlHENPatchSyscall((u32)_sceGeListEnQueue, sceGeListEnQueuePatched);
-  sctrlHENPatchSyscall((u32)_sceGeListEnQueueHead, sceGeListEnQueueHeadPatched);
-  // sctrlHENPatchSyscall((u32)_sceGeListSync, sceGeListSyncPatched);
-  sctrlHENPatchSyscall((u32)_sceGeDrawSync, sceGeDrawSyncPatched);
+  sctrlHENPatchSyscall((void *)_sceGeEdramGetAddr, sceGeEdramGetAddrPatched);
+  sctrlHENPatchSyscall((void *)_sceGeEdramGetSize, sceGeEdramGetSizePatched);
+  sctrlHENPatchSyscall((void *)_sceGeListUpdateStallAddr, sceGeListUpdateStallAddrPatched);
+  sctrlHENPatchSyscall((void *)_sceGeListEnQueue, sceGeListEnQueuePatched);
+  sctrlHENPatchSyscall((void *)_sceGeListEnQueueHead, sceGeListEnQueueHeadPatched);
+  // sctrlHENPatchSyscall((void *)_sceGeListSync, sceGeListSyncPatched);
+  sctrlHENPatchSyscall((void *)_sceGeDrawSync, sceGeDrawSyncPatched);
 
   _sceDisplaySetFrameBuf = (void *)FindProc("sceDisplay_Service", "sceDisplay_driver", 0x289D82FE);
-  sctrlHENPatchSyscall((u32)_sceDisplaySetFrameBuf, sceDisplaySetFrameBufPatched);
+  sctrlHENPatchSyscall((void *)_sceDisplaySetFrameBuf, sceDisplaySetFrameBufPatched);
 
   // SceUID thid = sceKernelCreateThread("draw_thread", draw_thread, 0x11, 0x4000, 0, NULL);
   // if (thid >= 0)
